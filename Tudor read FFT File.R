@@ -28,6 +28,8 @@ tryCatch({
       break
     }
     
+    
+    
     # Read one complete FFT record (1024 single-precision floats)
     record <- readBin(con, what = "numeric", size = 4, n = points_per_record)
     
@@ -75,4 +77,26 @@ if (length(all_records) > 0) {
 }
 
 diff(unlist(all_timestamps))
+
+library(ggplot2)
+library(reshape2)
+library(tidyverse)
+
+# Assuming fft_matrix is your FFT data matrix
+# Rows = frequency bins, Columns = time segments
+fft_data_matrix <- matrix(runif(100 * 50), nrow = 100, ncol = 50)
+
+# Convert to long format
+df <- melt(fft_data_matrix[-1,])
+colnames(df) <- c("FrequencyBin", "TimeSegment", "Magnitude")
+
+# Plot
+ggplot(df %>% filter(TimeSegment>0), aes(x = TimeSegment, y = FrequencyBin, fill = Magnitude)) +
+  geom_tile() +
+  scale_fill_viridis_c() +
+  labs(title = "Spectrogram from FFT Data Matrix",
+       x = "Time Segment", y = "Frequency Bin") +
+  theme_minimal() +
+  scale_y_continuous(limits = c(0, 100))
+
   

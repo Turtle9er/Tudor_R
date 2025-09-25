@@ -27,19 +27,20 @@ records_list <- list()
 while (TRUE) {
   
   # 1. Read the first field to check if we're at the end of the file
-  index <- readBin(con, integer(), n = 1, size = 4, signed = FALSE)
+  index <- readBin(con, integer(), n = 1, size = 4)
   if (length(index) == 0) {
     break # End of file
   }
   
   # 2. Read all other fixed-size fields up to the variable-length arrays
-  cadenceTime <- readBin(con, integer(), n = 1, size = 4, signed = FALSE)
-  positionDeg <- readBin(con, integer(), n = 1, size = 4, signed = FALSE)
-  DegSamples <- readBin(con, integer(), n = 1, size = 4, signed = FALSE)
+  cadenceTime <- readBin(con, integer(), n = 1, size = 4)
+  positionDeg <- readBin(con, integer(), n = 1, size = 4)
+  DegSamples <- readBin(con, integer(), n = 1, size = 4)
   
   # 3. Read the DegTimeArray based on the value of hzSamples
   # Use max(0, hzSamples) to prevent errors if hzSamples is negative or invalid
-  DegTimeArray <- list(readBin(con, integer(), n = max(0, 18), size = 2, signed = FALSE))
+  DegTimeArray <- list(readBin(con, integer(), n = max(0, 64), size = 4))
+  DegSumTime <- sum(unlist(DegTimeArray))
   
   # 4. Read the fields between the two variable arrays
   numSat <- list(readBin(con, integer(), n = 1, size = 1, signed = FALSE))
@@ -62,7 +63,8 @@ while (TRUE) {
   # 7. Assemble the full record and add it to our list
   record <- list(
     index = index,
-    cadenceTime = cadenceTime,
+    wheelTime = cadenceTime,
+    DegSumTime = DegSumTime,
     positionDeg = positionDeg,
     DegSamples = DegSamples,
     DegTimeArray = DegTimeArray,
@@ -92,52 +94,131 @@ if(length(records_list) > 0) {
 }
 }
 
-log_data$torqueValues[1]
 
-log_data %>% 
-  mutate(Epoch = epochTime_s*100000 + epochTime_ms ) %>% 
-  relocate(Epoch, .before="epochTime_s") %>% 
-  view()
-
-writeData <- log_data %>% 
-  mutate(Epoch = epochTime_s*100000 + epochTime_ms, latitude = latitude/1E7, longitude = longitude/1E7, Speed_kmh = (groundSpeed/1000)*3.6) %>% 
-  relocate(Epoch, .before="epochTime_s") %>% 
-  select(-c(DegTimeArray, torqueValues)) %>% 
-  as.data.frame()
+write.table(apply(log_data,2,as.character), file="clipboard-16384", sep="\t", row.names=FALSE, col.names=T)
 
 
-write.table(apply(writeData,2,as.character), file="clipboard-16384", sep="\t", row.names=FALSE, col.names=T)
+# --- Data Correction: Fix Split Revolutions ---
+SAMPLES_PER_REV <- 6
+# Create an empty list to store the corrected records
+{
+corrected_records <- list()
+i <- 1 # Initialize a counter for the while loop
 
-log_data$DegTimeArray[20]
-# --- Post-Processing and Display ---
+cat("--- Starting data correction process... ---\n")
+original_rows <- nrow(log_data)
 
-# Convert the Unix epoch timestamp to a human-readable POSIXct format
-log_data <- log_data %>%
-  mutate(
-    timestamp_utc = as.POSIXct(epochTime_s, origin = "1970-01-01", tz = "UTC"),
-    # Convert ground speed from mm/s to km/h for easier interpretation
-    groundSpeed_kmh = groundSpeed * 0.0036
-  ) %>% 
-  view()
+while (i <= original_rows) {
+  # Get the current row
+  current_row <- log_data[i, ]
+  
+  # Check if the revolution might be split AND that we are not at the last row
+  if (current_row$DegSamples < SAMPLES_PER_REV && i < original_rows) {
+    next_row <- log_data[i + 1, ]
+    
+    # Check if this row and the next one form a complete 18-sample revolution
+    is_valid_split <- (current_row$DegSamples + next_row$DegSamples == SAMPLES_PER_REV)
+    
+    if (is_valid_split) {
+      # --- Merge the two rows ---
+      merged_row <- current_row # Start with the first row as a template
+      
+      # Combine the time arrays from both rows
+      merged_row$DegTimeArray <- list(c(unlist(current_row$DegTimeArray), unlist(next_row$DegTimeArray)))
+      merged_row$torqueValues <- list(c(unlist(current_row$torqueValues), unlist(next_row$torqueValues)))
 
-log_data %>% 
-  slice (-1:-2) %>% 
-  select(index, DegTimeArray) %>% 
-  unnest(DegTimeArray) %>% 
-  mutate(elapsed_s = cumsum(DegTimeArray)/1000000) %>% 
-  view()
+      
+      # Update the sample counts
+      merged_row$DegSamples <- SAMPLES_PER_REV
+      
+      # Recalculate the SumTime for the newly combined arrays
+      merged_row$DegSumTime <- sum(unlist(merged_row$DegTimeArray))
+      
+      # Add the single merged row to our corrected list
+      corrected_records[[length(corrected_records) + 1]] <- merged_row
+      
+      # IMPORTANT: Skip the next row since we've already processed it
+      i <- i + 2 
+      next # Continue to the next iteration of the loop
+    }
+  }
+  
+  # If the row is complete (or is a short row we can't fix), add it as is
+  # We can choose to keep or discard incomplete rows that couldn't be merged
+  if (current_row$DegSamples == SAMPLES_PER_REV) {
+    corrected_records[[length(corrected_records) + 1]] <- current_row
+  }
+  
+  # Move to the next row
+  i <- i + 1
+}
 
-# Print the structure and head of the final data frame
-cat("--- Data Parsing Complete ---\n\n")
-cat("Structure of the final data frame:\n")
-str(log_data)
+# Combine the list of corrected records into a final, clean tibble
+corrected_log_data <- bind_rows(corrected_records)
 
-cat("\n\nFirst 6 records:\n")
-print(head(log_data))
+cat("Data correction complete.\n")
+cat("Original number of rows:", original_rows, "\n")
+cat("Corrected number of rows:", nrow(corrected_log_data), "\n\n")
 
-cat("\n--- Notes on Usage ---\n")
-cat("The data is now in the 'log_data' data frame.\n")
-cat("The 'DegTimeArray' and 'torqueValues' columns are list-columns.\n")
-cat("To analyze the data within these arrays, you can use 'tidyr::unnest()'.\n")
-cat("Example: log_data %>% select(index, torqueValues) %>% unnest(torqueValues)\n")
 
+# --- Verification ---
+cat("--- Sample Counts Before Correction ---\n")
+print(table(log_data$DegSamples))
+
+cat("\n--- Sample Counts After Correction ---\n")
+# This table should now ideally only show '18'
+print(table(corrected_log_data$DegSamples))
+}
+
+
+write.table(apply(corrected_log_data,2,as.character), file="clipboard-16384", sep="\t", row.names=FALSE, col.names=T)
+
+log_data$DegTimeArray[489]
+
+library(ggplot2)
+
+# Assuming 'log_data' is your tibble created from the binary file.
+
+# --- Plot for DegTimeArray ---
+
+# 1. Prepare the data: unnest and filter
+deg_time_data <- corrected_log_data %>%
+  select(DegTimeArray) %>%
+  unnest(cols = c(DegTimeArray)) %>%
+  filter(DegTimeArray != 0) %>%
+  mutate(data_point_index = row_number())
+
+# 2. Create the plot
+deg_time_plot <- ggplot(deg_time_data, aes(x = data_point_index, y = DegTimeArray)) +
+  geom_line(color = "blue") +
+  labs(
+    title = "Continuous Plot of DegTimeArray (Zeros Removed)",
+    x = "Data Point Index",
+    y = "DegTimeArray Value"
+  ) +
+  theme_minimal()
+
+# 3. Display the plot
+print(deg_time_plot)
+
+
+# --- Plot for torqueValues ---
+
+# 1. Prepare the data: unnest
+torque_data <- corrected_log_data %>%
+  select(torqueValues) %>%
+  unnest(cols = c(torqueValues)) %>%
+  mutate(data_point_index = row_number())
+
+# 2. Create the plot
+torque_plot <- ggplot(torque_data, aes(x = data_point_index, y = torqueValues)) +
+  geom_line(color = "red") +
+  labs(
+    title = "Continuous Plot of Torque Values",
+    x = "Data Point Index",
+    y = "Torque Value"
+  ) +
+  theme_minimal()
+
+# 3. Display the plot
+print(torque_plot)
