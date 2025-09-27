@@ -6,6 +6,8 @@
 # Required libraries (install if you don't have them)
 # install.packages("tidyverse") # Optional, but recommended for data manipulation
 library(tidyverse)
+library(plotly)
+library(ggplot2)
 
 # --- Main Parsing Function ---
 
@@ -39,11 +41,11 @@ while (TRUE) {
   
   # 3. Read the DegTimeArray based on the value of hzSamples
   # Use max(0, hzSamples) to prevent errors if hzSamples is negative or invalid
-  DegTimeArray <- list(readBin(con, integer(), n = max(0, 64), size = 4))
+  DegTimeArray <- list(readBin(con, integer(), n = max(0, 6), size = 4))
   DegSumTime <- sum(unlist(DegTimeArray))
   
   # 4. Read the fields between the two variable arrays
-  numSat <- list(readBin(con, integer(), n = 1, size = 1, signed = FALSE))
+  numSat <- readBin(con, integer(), n = 1, size = 1, signed = FALSE)
   epochTime_s <- readBin(con, integer(), n = 1, size = 4, signed = FALSE)
   epochTime_ms <- readBin(con, integer(), n = 1, size = 4, signed = FALSE)
   groundSpeed <- readBin(con, integer(), n = 1, size = 4, signed = TRUE)
@@ -95,7 +97,7 @@ if(length(records_list) > 0) {
 }
 
 
-write.table(apply(log_data,2,as.character), file="clipboard-16384", sep="\t", row.names=FALSE, col.names=T)
+#write.table(apply(log_data,2,as.character), file="clipboard-16384", sep="\t", row.names=FALSE, col.names=T)
 
 
 # --- Data Correction: Fix Split Revolutions ---
@@ -222,3 +224,81 @@ torque_plot <- ggplot(torque_data, aes(x = data_point_index, y = torqueValues)) 
 
 # 3. Display the plot
 print(torque_plot)
+
+
+# --- 1. Prepare Torque Data ---
+# Unnest the torque values and create a time axis based on a 60Hz sampling rate.
+torque_plot_data <- corrected_log_data %>%
+  select(torqueValues) %>%
+  unnest(cols = c(torqueValues)) %>%
+  mutate(
+    time_sec = (row_number() - 1) / 60, # Time in seconds (sample_index / sample_rate)
+    measurement = "Torque"
+  ) %>%
+  rename(value = torqueValues)
+
+# --- 2. Prepare DegTimeArray Data ---
+# Unnest, filter zeros, and create a cumulative time axis in seconds.
+deg_time_plot_data <- corrected_log_data %>%
+  select(DegTimeArray) %>%
+  unnest(cols = c(DegTimeArray)) %>%
+  filter(DegTimeArray != 0) %>%
+  mutate(
+    # Convert microseconds to seconds and then calculate the cumulative sum
+    time_sec = cumsum(as.numeric(DegTimeArray) / 1000000),
+    measurement = "DegTime"
+  ) %>%
+  rename(value = DegTimeArray)
+
+# This code builds on the 'torque_plot_data' and 'deg_time_plot_data'
+# data frames created in Method 1.
+
+# --- 1. Determine Scaling Factor ---
+# We will scale the DegTime values to fit within the range of the Torque values.
+torque_range <- range(torque_plot_data$value, na.rm = TRUE)
+deg_time_range <- range(deg_time_plot_data$value, na.rm = TRUE)
+
+# --- 2. Create the Plot with a Secondary Axis ---
+# The trick is to manually scale the second data source and then add a
+# secondary axis that reverses the scaling transformation for its labels.
+p <- ggplot() +
+  # Plot the first series (Torque)
+  geom_line(
+    data = torque_plot_data,
+    aes(x = time_sec, y = value, color = "Torque")
+  ) +
+  # Plot the second, scaled series (DegTime)
+  geom_line(
+    data = deg_time_plot_data,
+    # Scale 'value' from its original range to the torque range
+    aes(
+      x = time_sec,
+      y = (value - deg_time_range[1]) / diff(deg_time_range) * diff(torque_range) + torque_range[1],
+      color = "DegTime"
+    )
+  ) +
+  # Add the secondary Y-axis
+  scale_y_continuous(
+    name = "Torque Value",
+    # Add the secondary axis, reversing the transformation
+    sec.axis = sec_axis(
+      trans = ~ (. - torque_range[1]) / diff(torque_range) * diff(deg_time_range) + deg_time_range[1],
+      name = "DegTimeArray Value"
+    )
+  ) +
+  # --- 3. Add Labels and Formatting ---
+  labs(
+    title = "Torque and DegTimeArray with Dual Y-Axes",
+    x = "Time (seconds)",
+    color = "Measurement"
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c("Torque" = "red", "DegTime" = "blue")) +
+  theme(
+    axis.title.y.left = element_text(color = "red"),
+    axis.text.y.left = element_text(color = "red"),
+    axis.title.y.right = element_text(color = "blue"),
+    axis.text.y.right = element_text(color = "blue")
+  )
+
+ggplotly(p)
