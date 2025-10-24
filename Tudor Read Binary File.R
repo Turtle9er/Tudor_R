@@ -13,6 +13,7 @@ library(ggplot2)
 
 # Prompt user to select the binary file
 file_path <- file.choose()
+SAMPLES_PER_REV <- 6
 
 {
   if (!file.exists(file_path)) {
@@ -41,7 +42,7 @@ while (TRUE) {
   
   # 3. Read the DegTimeArray based on the value of hzSamples
   # Use max(0, hzSamples) to prevent errors if hzSamples is negative or invalid
-  DegTimeArray <- list(readBin(con, integer(), n = max(0, 6), size = 4))
+  DegTimeArray <- list(readBin(con, integer(), n = max(0, SAMPLES_PER_REV), size = 4))
   DegSumTime <- sum(unlist(DegTimeArray))
   
   # 4. Read the fields between the two variable arrays
@@ -101,7 +102,7 @@ if(length(records_list) > 0) {
 
 
 # --- Data Correction: Fix Split Revolutions ---
-SAMPLES_PER_REV <- 6
+
 # Create an empty list to store the corrected records
 {
 corrected_records <- list()
@@ -201,7 +202,25 @@ deg_time_plot <- ggplot(deg_time_data, aes(x = data_point_index, y = DegTimeArra
   theme_minimal()
 
 # 3. Display the plot
-print(deg_time_plot)
+ggplotly(deg_time_plot)
+
+wheel_data <- corrected_log_data %>%
+  select(wheelTime) %>%
+  filter(wheelTime != 0) %>%
+  mutate(wheel_point_index = row_number())
+
+# 2. Create the plot
+wheel_time_plot <- ggplot(wheel_data, aes(x = wheel_point_index, y = wheelTime)) +
+  geom_line(color = "blue") +
+  labs(
+    title = "Continuous Plot of wheelTime (Zeros Removed)",
+    x = "Data Point Index",
+    y = "wheelTime Value"
+  ) +
+  theme_minimal()
+
+# 3. Display the plot
+ggplotly(wheel_time_plot)
 
 
 # --- Plot for torqueValues ---
