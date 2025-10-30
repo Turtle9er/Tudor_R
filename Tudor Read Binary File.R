@@ -14,6 +14,9 @@ library(ggplot2)
 # Prompt user to select the binary file
 file_path <- file.choose()
 SAMPLES_PER_REV <- 6
+WHEEL_CIRCUMFERENCE_M = 2.15
+CONVERSION_FACTOR_KMH = (WHEEL_CIRCUMFERENCE_M / SAMPLES_PER_REV) * 1000000 * 3.6
+CONVERSION_FACTOR_REVOLUTION = WHEEL_CIRCUMFERENCE_M * 1000000 * 3.6
 
 {
   if (!file.exists(file_path)) {
@@ -97,7 +100,6 @@ if(length(records_list) > 0) {
 }
 }
 
-
 #write.table(apply(log_data,2,as.character), file="clipboard-16384", sep="\t", row.names=FALSE, col.names=T)
 
 
@@ -173,10 +175,15 @@ cat("\n--- Sample Counts After Correction ---\n")
 print(table(corrected_log_data$DegSamples))
 }
 
+corrected_log_data <- corrected_log_data %>%
+  mutate(
+    DegSpeed_kmh = map(DegTimeArray, ~ CONVERSION_FACTOR_KMH / unlist(.x)),
+    WheelSpeed_kmh = CONVERSION_FACTOR_REVOLUTION / wheelTime)
 
 write.table(apply(corrected_log_data,2,as.character), file="clipboard-16384", sep="\t", row.names=FALSE, col.names=T)
 
-log_data$DegTimeArray[489]
+log_data$DegTimeArray[352]
+log_data$torqueValues[350]
 
 library(ggplot2)
 
@@ -186,13 +193,13 @@ library(ggplot2)
 
 # 1. Prepare the data: unnest and filter
 deg_time_data <- corrected_log_data %>%
-  select(DegTimeArray) %>%
-  unnest(cols = c(DegTimeArray)) %>%
-  filter(DegTimeArray != 0) %>%
+  select(DegSpeed_kmh) %>%
+  unnest(cols = c(DegSpeed_kmh)) %>%
+  filter(DegSpeed_kmh != 0) %>%
   mutate(data_point_index = row_number())
 
 # 2. Create the plot
-deg_time_plot <- ggplot(deg_time_data, aes(x = data_point_index, y = DegTimeArray)) +
+deg_time_plot <- ggplot(deg_time_data, aes(x = data_point_index, y = DegSpeed_kmh)) +
   geom_line(color = "blue") +
   labs(
     title = "Continuous Plot of DegTimeArray (Zeros Removed)",
@@ -205,17 +212,17 @@ deg_time_plot <- ggplot(deg_time_data, aes(x = data_point_index, y = DegTimeArra
 ggplotly(deg_time_plot)
 
 wheel_data <- corrected_log_data %>%
-  select(wheelTime) %>%
-  filter(wheelTime != 0) %>%
+  select(WheelSpeed_kmh) %>%
+  filter(WheelSpeed_kmh != 0) %>%
   mutate(wheel_point_index = row_number())
 
 # 2. Create the plot
-wheel_time_plot <- ggplot(wheel_data, aes(x = wheel_point_index, y = wheelTime)) +
+wheel_time_plot <- ggplot(wheel_data, aes(x = wheel_point_index, y = WheelSpeed_kmh)) +
   geom_line(color = "blue") +
   labs(
-    title = "Continuous Plot of wheelTime (Zeros Removed)",
+    title = "Continuous Plot of wheelSpeed (Zeros Removed)",
     x = "Data Point Index",
-    y = "wheelTime Value"
+    y = "wheelSpeed"
   ) +
   theme_minimal()
 
@@ -259,15 +266,16 @@ torque_plot_data <- corrected_log_data %>%
 # --- 2. Prepare DegTimeArray Data ---
 # Unnest, filter zeros, and create a cumulative time axis in seconds.
 deg_time_plot_data <- corrected_log_data %>%
-  select(DegTimeArray) %>%
-  unnest(cols = c(DegTimeArray)) %>%
-  filter(DegTimeArray != 0) %>%
+  select(DegSpeed_kmh,DegTimeArray) %>%
+  unnest(cols = c(DegSpeed_kmh,DegTimeArray)) %>%
+  filter(DegSpeed_kmh != 0) %>%
   mutate(
     # Convert microseconds to seconds and then calculate the cumulative sum
     time_sec = cumsum(as.numeric(DegTimeArray) / 1000000),
     measurement = "DegTime"
   ) %>%
-  rename(value = DegTimeArray)
+  select(-DegTimeArray) %>%
+  rename(value = DegSpeed_kmh)
 
 # This code builds on the 'torque_plot_data' and 'deg_time_plot_data'
 # data frames created in Method 1.
